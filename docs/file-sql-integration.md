@@ -214,12 +214,41 @@ if (OB_FAIL(table_ret)) {
 
 路径、格式与 null 字符串现在都按 C 字符串写入计划。
 
+## DESCRIBE：文件表的列清单（设计已定，未实现）
+
+本版本的语法里 `describe` 与 `explain` 是同一个产生式，解析器分不出二者，
+`describe select * from read_csv(...)` 返回的是执行计划，不是官方用例期望的
+`column_name`、`column_type`、`null`、`key`、`default`、`extra` 六列。
+
+设计（已实现并验证过语法树，但没有通过编译后的端到端验证，暂未合入）：
+
+1. 语法里 `explain_or_desc` 对 `describe` 与 `desc` 产生一个标记节点，
+   `T_EXPLAIN` 的语法树节点多一个孩子，标记节点说这是 describe。
+2. 语义解析阶段，`describe` 的子语句解析完之后，如果子语句读的是文件表，
+   就用文件表的列定义（列名、推断出的类型名、是否可空）拼出一条语句：
+   `select 'id' as column_name, 'BIGINT' as column_type, 'NO' as null,
+   null as key, null as default, null as extra union all ...`，
+   这条语句解析之后就是 describe 的结果。列名里的引号会被写成两个，
+   文件里的列名不能改写这条语句。
+3. 子语句读的不是文件表时，describe 仍然返回执行计划，行为没有变化。
+
+这条路走的是普通的 select 通路，结果的六列就是官方用例期望的六列。
+
 ## 尚未解决的部分
 
-- `DESCRIBE` 与 `COPY` 还没有实现，属于 ① 与 ⑥ 的评分项；`glob` 已由
-  `lab2/jsonl-parquet` 实现。`DESCRIBE` 在本版本的语法里是 `EXPLAIN` 的别名，
-  `describe select * from read_csv(...)` 返回的是执行计划，不是官方用例期望的
-  `column_name`、`column_type`、`null`、`key`、`default`、`extra` 六列。
+- `COPY` 还没有实现，属于 ⑥ 的评分项；`glob` 已由
+  `lab2/jsonl-parquet` 实现。官方用例的最后一段是 `copy (select ...) to '...'
+  (format csv, header, nullstr 'NULL')`，用例在那一段停下。
+  OB 已经有 `select ... into outfile '...' format = (type = 'csv', ...)` 的通路，
+  `copy` 可以复用它：语法把 `copy (select) to '...' (...)` 改写成带
+  into outfile 子句的 select，选项 `format csv` 变成 csv 格式，
+  `header` 需要执行算子把列名写成第一行（列名要一路带到算子），
+  `nullstr 'NULL'` 需要把空值写成 `NULL` 而不是 OB 默认的 `\N`。
+  语法上有一个坑：`copy` 是保留字里的非保留字，`copy (` 既是 copy 语句的开头，
+  也可能是表函数调用，解析器会报 shift/reduce 冲突；选项列表里
+  `format csv` 是一个名字加一个值、`header` 只有一个名字，选项本身也有歧义。
+  绕开的办法是把选项列表拍平成名字和值的序列，在语义解析阶段再按
+  `format`/`header`/`nullstr` 分组。
 - 资源上限目前是框架里的常量，还没有做成会话变量。
 - 框架的路径校验只在解析阶段做一次，执行阶段重新打开文件之前没有再校验一次，
   两次之间文件被换成指向别处的软链接不会被发现。
